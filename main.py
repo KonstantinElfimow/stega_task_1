@@ -13,7 +13,7 @@ def from_bits(bits: list[int]) -> str:
     return ''.join(chr(int(''.join(map(str, bits[i: i + 8])), 2)) for i in range(0, len(bits), 8))
 
 
-def lsb_encoding(old_file: str, message: str, new_file: str, key_file: str):
+def lsb_encoding(old_file: str, message: str, new_file: str, key_file: str) -> None:
     global img
     try:
         # Получим 3-мерную матрицу RGB из .png.
@@ -50,7 +50,8 @@ def lsb_encoding(old_file: str, message: str, new_file: str, key_file: str):
                     else:
                         pixel_rgb.append(pix[(x, y)][z])
                 stack.append(((x, y), tuple(pixel_rgb)))
-        # Записываем ключи в файл в том же порядке, что и при обратном обходе пикселей контейнера при реализации нашего ССИ.
+        # Записываем ключи в файл в том же порядке, что и при обратном обходе пикселей контейнера при реализации
+        # нашего ССИ.
         with open(key_file, encoding='utf-8', mode='w') as file:
             while keys:
                 file.write(keys.popleft() + '\n')
@@ -98,14 +99,14 @@ def metrics(empty_file: str, full_file: str) -> None:
     img.close()
 
     NMSE_res = np.sum((empty - full) * (empty - full)) / np.sum((empty * empty))
-    print('Нормированное среднее квадратичное отклонение: {}'.format(NMSE_res))
+    print('Нормированное среднее квадратичное отклонение:\n{}'.format(NMSE_res))
 
     SNR_res = 1 / NMSE_res
-    print('Отношение сигнал-шум: {}'.format(SNR_res))
+    print('Отношение сигнал-шум:\n{}'.format(SNR_res))
 
     H, W = empty.shape[0], empty.shape[1]
     PSNR_res = W * H * ((np.max(empty) ** 2) / np.sum((empty - full) * (empty - full)))
-    print('Пиковое отношение сигнал-шум: {}'.format(PSNR_res))
+    print('Пиковое отношение сигнал-шум:\n{}'.format(PSNR_res))
 
 
 def main():
