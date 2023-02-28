@@ -3,9 +3,10 @@ from collections import deque
 import numpy as np
 
 
-def to_bits(string: str) -> list[int]:
+def message_to_bits(string: str) -> list[int]:
     """ Из строки в список битов. Пример: Hi --> [0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1] """
-    return list(map(int, ''.join([bin(ord(i)).lstrip('0b').rjust(8, '0') for i in string])))
+    b = list(string.encode('utf-8'))
+    return list(map(int, ''.join(['{0:08b}'.format(num) for num in b])))
 
 
 def from_bits(bits: list[int]) -> str:
@@ -13,7 +14,7 @@ def from_bits(bits: list[int]) -> str:
     return ''.join(chr(int(''.join(map(str, bits[i: i + 8])), 2)) for i in range(0, len(bits), 8))
 
 
-def lsb_encoding(old_file: str, message: str, new_file: str, key_file: str) -> None:
+def lsb_encoding(old_file: str, message: str, new_file: str) -> int:
     global img
     try:
         # Получим 3-мерную матрицу RGB из .png.
@@ -22,19 +23,16 @@ def lsb_encoding(old_file: str, message: str, new_file: str, key_file: str) -> N
         # длина и ширина изображения
         width, height = img.size[0], img.size[1]
 
-        if len(message) * 8 > width * height * 3:
+        # Преобразование сообщения из строки в поток битов.
+        bits = message_to_bits(message)
+        length: int = len(bits)
+        if length > width * height * 3:
             raise ValueError("Размер контейнера не позволяет записать в него сообщение!")
-
-        # Преобразование сообщения из строки в очередь битов строки.
-        bits: deque[int] = deque(to_bits(message))
+        bits = deque(bits)
 
         # Так как нужно при скрытии использовать обратный порядок обхода пикселей контейнера при реализации ССИ,
         # то будем использовать стек, а затем формировать новое изображение.
         stack: deque[tuple] = deque()
-        # Флаг записи сообщения в контейнер (если False, то размера контейнера не хватило для записи M в контейнер).
-        is_hidden: bool = False
-        # Координаты точек, где будет сокрыто сообщение.
-        keys: deque[str] = deque()
         # Проходим в обратном порядке
         for y in range(height - 1, -1, -1):
             for x in range(width - 1, -1, -1):
@@ -44,49 +42,39 @@ def lsb_encoding(old_file: str, message: str, new_file: str, key_file: str) -> N
                 # запоминаем keys позиции со спрятанной информацией, если нет - пиксель оставляем нетронутым.
                 for z in range(3):
                     if bits:
-                        keys.append('{} {} {}'.format(x, y, z))
                         # Стираем младший бит цветового канала пикселя, записываем в него новый бит с информацией.
                         pixel_rgb.append(((pix[(x, y)][z] >> 1) << 1) | bits.popleft())
                     else:
                         pixel_rgb.append(pix[(x, y)][z])
                 stack.append(((x, y), tuple(pixel_rgb)))
-        # Записываем ключи в файл в том же порядке, что и при обратном обходе пикселей контейнера при реализации
-        # нашего ССИ.
-        with open(key_file, encoding='utf-8', mode='w') as file:
-            while keys:
-                file.write(keys.popleft() + '\n')
         # Отрисовываем новое изображение со скрытой информацией.
         draw = ImageDraw.Draw(img)
         while stack:
             draw.point(*(stack.pop()))
         img.save(new_file, 'PNG')
+        return length
     except Exception as ex:
         print(ex)
     finally:
         img.close()
 
 
-def lsb_decoding(image_file: str, key_filepath: str) -> str:
+def lsb_decoding(image_file: str, length: int) -> str:
     # Получим 3-мерную матрицу RGB из .png.
     img = Image.open(image_file).convert('RGB')
     pix = img.load()
     img.close()
-    # Получаем ключи из файла.
-    keys = list()
-    with open(key_filepath, encoding='utf-8', mode='r') as key_file:
-        for line in key_file.readlines():
-            key = list()
-            for word in line.split():
-                key.append(int(word))
-            keys.append(tuple(key))
-    keys = tuple(keys)
+    width, height = img.size[0], img.size[1]
     # Получаем биты с пользовательской информацией в изображении по переданным ключам.
+    count: int = 0
     bits: list[int] = list()
-    for key in keys:
-        x, y, z = key
-        bits.append(int(pix[(x, y)][z] & 1))
-    result: str = from_bits(bits)
-    return result
+    for y in range(height - 1, -1, -1):
+        for x in range(width - 1, -1, -1):
+            for z in range(3):
+                bits.append(int(pix[(x, y)][z] & 0x01))
+                count += 1
+                if count == length:
+                    return from_bits(bits)
 
 
 def metrics(empty_file: str, full_file: str) -> None:
@@ -113,9 +101,8 @@ def main():
     empty_file: str = 'in/image.png'
     message: str = 'This is the secret!'
     full_file: str = 'out/new_image.png'
-    key_filepath: str = 'keys.txt'
-    lsb_encoding(empty_file, message, full_file, key_filepath)
-    m = lsb_decoding(full_file, key_filepath)
+    length = lsb_encoding(empty_file, message, full_file)
+    m = lsb_decoding(full_file, length)
     print(m)
     metrics(empty_file, full_file)
 
