@@ -1,110 +1,129 @@
-from PIL import Image, ImageDraw
-from collections import deque
+from PIL import Image
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+import warnings
+warnings.filterwarnings(action='once')
+
+large = 22
+med = 16
+small = 12
+params = {'axes.titlesize': large,
+          'legend.fontsize': med,
+          'figure.figsize': (16, 10),
+          'axes.labelsize': med,
+          'axes.titlesize': med,
+          'xtick.labelsize': med,
+          'ytick.labelsize': med,
+          'figure.titlesize': large}
+plt.rcParams.update(params)
+plt.style.use('seaborn-whitegrid')
+
+encoding: str = 'utf-8'
 
 
-def message_to_bits(string: str) -> list[int]:
-    """ Из строки в список битов. Пример: Hi --> [0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1] """
-    b = list(string.encode('utf-8'))
-    return list(map(int, ''.join(['{0:08b}'.format(num) for num in b])))
+class LSB:
+    def __init__(self, old_image_path: str, new_image_path: str):
+        self.__empty_image_path: str = old_image_path
+        self.__full_image_path: str = new_image_path
+        self.__occupancy: int = 0
 
+    @staticmethod
+    def str_to_bits(message: str) -> list:
+        result = []
+        for num in list(message.encode(encoding=encoding)):
+            result.extend([(num >> x) & 1 for x in range(7, -1, -1)])
+        return result
 
-def from_bits(bits: list[int]) -> str:
-    """ Из списка битов в строку. Пример: [0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1] --> Hi """
-    return ''.join(chr(int(''.join(map(str, bits[i: i + 8])), 2)) for i in range(0, len(bits), 8))
+    @staticmethod
+    def bits_to_str(bits: list) -> str:
+        chars = []
+        for b in range(len(bits) // 8):
+            byte = bits[b * 8:(b + 1) * 8]
+            chars.append(chr(int(''.join([str(bit) for bit in byte]), 2)))
+        return ''.join(chars)
 
-
-def lsb_encoding(old_file: str, message: str, new_file: str) -> int:
-    global img
-    try:
-        # Получим 3-мерную матрицу RGB из .png.
-        img = Image.open(old_file).convert('RGB')
-        pix = img.load()
-        # длина и ширина изображения
-        width, height = img.size[0], img.size[1]
-
-        # Преобразование сообщения из строки в поток битов.
-        bits = message_to_bits(message)
-        length: int = len(bits)
-        if length > width * height * 3:
-            raise ValueError("Размер контейнера не позволяет записать в него сообщение!")
-        bits = deque(bits)
-
-        # Так как нужно при скрытии использовать обратный порядок обхода пикселей контейнера при реализации ССИ,
-        # то будем использовать стек, а затем формировать новое изображение.
-        stack: deque[tuple] = deque()
-        # Проходим в обратном порядке
-        for y in range(height - 1, -1, -1):
-            for x in range(width - 1, -1, -1):
-                # Пиксель с тремя координатами
-                pixel_rgb: list[int] = list()
-                # Для каждого из цветовых каналов пикселя скрываем информацию, если биты сообщения ещё есть в очереди, и
-                # запоминаем keys позиции со спрятанной информацией, если нет - пиксель оставляем нетронутым.
-                for z in range(3):
-                    if bits:
-                        # Стираем младший бит цветового канала пикселя, записываем в него новый бит с информацией.
-                        pixel_rgb.append(((pix[(x, y)][z] >> 1) << 1) | bits.popleft())
-                    else:
-                        pixel_rgb.append(pix[(x, y)][z])
-                stack.append(((x, y), tuple(pixel_rgb)))
-        # Отрисовываем новое изображение со скрытой информацией.
-        draw = ImageDraw.Draw(img)
-        while stack:
-            draw.point(*(stack.pop()))
-        img.save(new_file, 'PNG')
-        return length
-    except Exception as ex:
-        print(ex)
-    finally:
+    def embed(self, message: str):
+        img = Image.open(self.__empty_image_path).convert('RGB')
+        picture = np.asarray(img, dtype='uint8')
         img.close()
 
+        picture_shape = picture.shape
+        height, width, depth = picture.shape[0], picture.shape[1], picture.shape[2]
 
-def lsb_decoding(image_file: str, length: int) -> str:
-    # Получим 3-мерную матрицу RGB из .png.
-    img = Image.open(image_file).convert('RGB')
-    pix = img.load()
+        message_bits = LSB.str_to_bits(message)
+        if len(message_bits) > height * width * depth:
+            raise ValueError('Размер сообщения превышает размер контейнера!')
+        message_bits = np.asarray(message_bits)
+        bits_length = message_bits.shape[0]
+
+        picture = picture.reshape(-1)
+        picture[:bits_length] = ((picture[:bits_length] >> 1) << 1) | message_bits
+
+        picture = picture.reshape(picture_shape)
+
+        self.__occupancy = bits_length
+        Image.fromarray(picture).save(self.__full_image_path, 'PNG')
+
+    def recover(self) -> str:
+        img = Image.open(self.__full_image_path).convert('RGB')
+        picture = np.asarray(img, dtype='uint8')
+        img.close()
+
+        recovered_message = picture.reshape(-1)[:self.__occupancy] & 0x01
+        return LSB.bits_to_str(list(recovered_message))
+
+    @property
+    def occupancy(self) -> int:
+        return self.__occupancy
+
+
+def metrics(empty_image: str, full_image: str) -> None:
+    img = Image.open(empty_image).convert('RGB')
+    empty = np.asarray(img, dtype='uint8')
     img.close()
-    width, height = img.size[0], img.size[1]
-    # Получаем биты с пользовательской информацией в изображении по переданным ключам.
-    count: int = 0
-    bits: list[int] = list()
-    for y in range(height - 1, -1, -1):
-        for x in range(width - 1, -1, -1):
-            for z in range(3):
-                bits.append(int(pix[(x, y)][z] & 0x01))
-                count += 1
-                if count == length:
-                    return from_bits(bits)
 
-
-def metrics(empty_file: str, full_file: str) -> None:
-    img = Image.open(empty_file).convert('RGB')
-    empty = np.asarray(img, dtype=np.uint8)
+    img = Image.open(full_image).convert('RGB')
+    full = np.asarray(img, dtype='uint8')
     img.close()
 
-    img = Image.open(full_file).convert('RGB')
-    full = np.asarray(img, dtype=np.uint8)
-    img.close()
+    max_d = np.max(np.abs(empty.astype(int) - full.astype(int)))
+    print('Максимальное абсолютное отклонение:\n{}'.format(max_d))
 
-    NMSE_res = np.sum((empty - full) * (empty - full)) / np.sum((empty * empty))
-    print('Нормированное среднее квадратичное отклонение:\n{}'.format(NMSE_res))
-
-    SNR_res = 1 / NMSE_res
-    print('Отношение сигнал-шум:\n{}'.format(SNR_res))
+    SNR = np.sum(empty * empty) / np.sum((empty - full) ** 2)
+    print('Отношение сигнал-шум:\n{}'.format(SNR))
 
     H, W = empty.shape[0], empty.shape[1]
-    PSNR_res = W * H * ((np.max(empty) ** 2) / np.sum((empty - full) * (empty - full)))
-    print('Пиковое отношение сигнал-шум:\n{}'.format(PSNR_res))
+    MSE = np.sum((empty - full) ** 2) / (W * H)
+    print('Среднее квадратичное отклонение:\n{}'.format(MSE))
+
+    # Универсальный индекс качества (УИК)
+    # С помощью данной метрики оцениваются
+    # коррелированность, изменение динамического диапазона, а также изменение
+    # среднего значения одного изображения относительно другого.
+    # -1 <= UQI <= 1
+    # минимальному искажению изображения соответствуют
+    # значения UQI ~ 1
+    sigma = np.sum((empty - np.mean(empty)) * (full - np.mean(full))) / (H * W)
+    UQI = (4 * sigma * np.mean(empty) * np.mean(full)) / \
+          ((np.var(empty) ** 2 + np.var(full) ** 2) * (np.mean(empty) ** 2 + np.mean(full) ** 2))
+    print(f'Универсальный индекс качества (УИК):\n{UQI}\n')
 
 
 def main():
-    empty_file: str = 'in/image.png'
-    message: str = 'This is the secret!'
-    full_file: str = 'out/new_image.png'
-    length = lsb_encoding(empty_file, message, full_file)
-    m = lsb_decoding(full_file, length)
-    print(m)
-    metrics(empty_file, full_file)
+    old_image = 'input/old_image.png'
+    new_image = 'output/new_image.png'
+
+    with open('message.txt', mode='r', encoding=encoding) as file:
+        message = file.read()
+
+    lsb = LSB(old_image, new_image)
+    lsb.embed(message)
+    recovered_message = lsb.recover()
+    print('Ваше сообщение:\n{}'.format(recovered_message))
+
+    metrics(old_image, new_image)
 
 
 if __name__ == '__main__':
